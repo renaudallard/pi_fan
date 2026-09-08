@@ -4,7 +4,8 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/noctua-fan.py
+EnvironmentFile=-/etc/default/noctua-fan
+ExecStart=/usr/local/bin/noctua-fan.py $NOCTUA_FAN_ARGS
 RuntimeDirectory=noctua-fan
 Restart=always
 RestartSec=5

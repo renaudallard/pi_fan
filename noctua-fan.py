@@ -35,6 +35,7 @@ Requires 'dtoverlay=pwm-2chan' in /boot/firmware/config.txt.
 Requires: sudo apt install -y python3-gpiozero python3-lgpio
 """
 
+import argparse
 import glob
 import os
 import signal
@@ -50,11 +51,21 @@ TACH_GPIO = 24  # BCM numbering
 PULSES_PER_REV = 2
 INTERVAL = 2.0  # seconds between decisions
 
-# Fan is completely off at or below this temperature, in both directions.
-OFF_AT_OR_BELOW_C = 30.0
-
-# (CPU temp in C, duty cycle %) -- ascending. 100% at 45 C.
-CURVE = [(0, 0), (33, 20), (36, 40), (39, 60), (42, 80), (45, 100)]
+# Fan curves, in order of increasing aggressiveness. Each entry is the
+# temperature at or below which the fan stops completely, in both directions,
+# and the (CPU temp in C, duty cycle %) steps in ascending order.
+#
+# Every mode holds its off point 3 C below its first step. That dead band is
+# what keeps the fan from chattering on and off at idle, so a new mode should
+# preserve it. Duty below 20% is undefined for these fans, so no curve lands
+# between 0 and 20.
+MODES = {
+    "quiet": (30.0, [(0, 0), (33, 20), (36, 40), (39, 60), (42, 80), (45, 100)]),
+    "moderate": (30.0, [(0, 0), (33, 40), (36, 60), (39, 80), (42, 100)]),
+    "aggressive": (29.0, [(0, 0), (32, 60), (35, 80), (38, 100)]),
+    "maximum": (28.0, [(0, 0), (31, 100)]),
+}
+DEFAULT_MODE = "moderate"
 
 # Only applied on cooldown, to stop the fan chattering at a step boundary.
 HYSTERESIS_C = 2.0
@@ -151,23 +162,58 @@ def publish(path, text):
         pass  # never let a status-file problem kill fan control
 
 
-def target_duty(temp, current):
-    if temp <= OFF_AT_OR_BELOW_C:
+def target_duty(temp, current, off_at, curve):
+    if temp <= off_at:
         return 0
     rising = 0
-    for threshold, duty in CURVE:
+    for threshold, duty in curve:
         if temp >= threshold:
             rising = duty
     if rising >= current:
         return rising
     falling = 0
-    for threshold, duty in CURVE:
+    for threshold, duty in curve:
         if temp >= threshold - HYSTERESIS_C:
             falling = duty
     return min(current, falling)
 
 
+def mode_summary(name):
+    """One line describing a curve, shared by --help and the startup log."""
+    off_at, curve = MODES[name]
+    steps = " ".join(f"{t}C:{d}%" for t, d in curve if d)
+    return f"off <={off_at:.0f}C  {steps}"
+
+
+def mode_help():
+    """Render the curve table so --help can never drift from MODES."""
+    lines = ["fan curves:"]
+    lines += [f"  {name:<11} {mode_summary(name)}" for name in MODES]
+    return "\n".join(lines)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="noctua-fan",
+        description="Temperature-driven speed control for a Noctua NF-A4x20 "
+        "5V PWM fan on a Raspberry Pi 4.",
+        epilog=mode_help(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-m",
+        "--mode",
+        choices=list(MODES),
+        default=DEFAULT_MODE,
+        help="fan curve to run (default: %(default)s)",
+    )
+    return parser.parse_args(argv)
+
+
 def main():
+    args = parse_args()
+    off_at, curve = MODES[args.mode]
+
     pwm = Pwm(find_pwmchip(), PWM_CHANNEL, PWM_PERIOD_NS)
     tach = Tach(TACH_GPIO)
     duty = 100
@@ -180,10 +226,12 @@ def main():
     signal.signal(signal.SIGTERM, bail)
     signal.signal(signal.SIGINT, bail)
 
+    print(f"mode {args.mode}: {mode_summary(args.mode)}", flush=True)
+
     while True:
         time.sleep(INTERVAL)
         temp = cpu_temp()
-        duty = target_duty(temp, duty)
+        duty = target_duty(temp, duty, off_at, curve)
         pwm.set_duty(duty)
         rpm = tach.read_rpm()
 
