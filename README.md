@@ -83,20 +83,21 @@ CURVE = [(0, 0), (33, 20), (36, 40), (39, 60), (42, 80), (45, 100)]
 HYSTERESIS_C = 2.0
 ```
 
-| CPU temp | Duty | Approx. rpm |
-| -------- | ---- | ----------- |
-| <= 30 C  | 0    | stopped     |
-| 30-32    | 0    | stopped     |
-| 33-35    | 20   | ~1100       |
-| 36-38    | 40   | ~2000       |
-| 39-41    | 60   | ~3000       |
-| 42-44    | 80   | ~4000       |
-| >= 45 C  | 100  | 5000        |
+| CPU temp | Duty | rpm     |
+| -------- | ---- | ------- |
+| <= 30 C  | 0    | stopped |
+| 30-32    | 0    | stopped |
+| 33-35    | 20   | 1042    |
+| 36-38    | 40   | 2249    |
+| 39-41    | 60   | 3372    |
+| 42-44    | 80   | 4390    |
+| >= 45 C  | 100  | 5290    |
 
-The rpm column is interpolated from the datasheet's two anchor points,
-1100 rpm at 20% and 5000 rpm at 100%, using Noctua's statement that the
-duty-to-rpm relationship is roughly linear. Measure your own with the tach
-output rather than trusting the middle rows.
+The rpm column is measured on one fan with the tachometer, a 60 second
+average at each duty during the sweep described below, not interpolated from
+the datasheet. Noctua's anchors are 1100 rpm at 20% and 5000 rpm at 100%, so
+this unit runs slightly faster than spec at the top of its range. Expect your
+own to differ and measure it rather than copying these numbers.
 
 Duty below 20% is undefined for these fans, so the curve steps from 0 to 20
 and never lands in between. The 3 C dead band between "off at 30" and the
@@ -113,7 +114,53 @@ single entry such as `[(0, 40)]`.
 
 Note that 45 C is far below where the Pi actually needs help: the Arm cores
 are throttled progressively between 80 C and 85 C, and the Pi 4 has no soft
-limit below that. This curve trades noise for headroom.
+limit below that. Measured here, sustained full load with the fan stopped
+settles at 63.8 C, still well clear of that. This curve trades noise for
+headroom, and under sustained load it pins at 100%, because every duty step
+leaves the CPU above the 45 C threshold.
+
+## What the fan actually buys
+
+Measured with `stress-ng --cpu 4` running unchanged across the whole sweep,
+descending through the duty steps with 150 seconds to settle and a 60 second
+average at each. The CPU held 2100 MHz at every point, so the heat input was
+identical throughout and nothing was thermally capped.
+
+| Duty | rpm  | Temp   | vs fan off | Step gain | C per 1000 rpm |
+| ---- | ---- | ------ | ---------- | --------- | -------------- |
+| 0%   |    0 | 63.8 C |            |           |                |
+| 20%  | 1042 | 56.2 C | -7.6       | -7.6      | 7.30           |
+| 40%  | 2249 | 53.0 C | -10.8      | -3.2      | 2.65           |
+| 60%  | 3372 | 50.8 C | -13.0      | -2.2      | 1.98           |
+| 80%  | 4390 | 49.1 C | -14.7      | -1.7      | 1.64           |
+| 100% | 5290 | 48.2 C | -15.6      | -0.9      | 1.02           |
+
+Three things follow.
+
+The entire range available to any control law is 8 C. Going from minimum spin
+to maximum, 1042 to 5290 rpm and 408% more air, moves the CPU 8 C. Cooling
+efficiency falls sevenfold across the sweep: the first 1042 rpm is worth
+7.6 C, the last 1919 rpm is worth 2.6 C. Nothing clever in the control loop
+can beat holding 100%, and holding 100% is only 8 C better than idling the
+fan at its floor.
+
+The top of the curve is close to free to give up. 60% duty already captures
+13.0 of the 15.6 C on offer, and the step from 80% to 100% buys 0.9 C in
+exchange for the loudest state the fan has. Capping the curve below 100%
+costs very little and is noticeably quieter.
+
+The fan is a comfort device here rather than a protective one. With it
+stopped completely, sustained full load settled at 63.8 C, and
+`vcgencmd get_throttled` read 0x0 both before and after. Ambient temperature
+and the enclosure will move that figure, so repeat the sweep rather than
+assuming it.
+
+To repeat it: stop the service, drive the duty by hand as shown under
+"Setting the speed by hand" below, hold a constant load, and average
+`/sys/class/thermal/thermal_zone0/temp` over a minute once the reading has
+stopped drifting. Watch the temperature while the fan is stopped and give
+yourself an abort threshold below 80 C, where the firmware starts throttling
+and the load stops being constant.
 
 ## Status output
 
