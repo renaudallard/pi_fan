@@ -290,6 +290,11 @@ the ones most likely to have been read before they were fully settled. The
 sweep ran descending, so every step heats toward a higher equilibrium and an
 unsettled reading is below the true value, never above.
 
+This sweep predates the move to 10% curve steps and still moves in 20% ones, so
+what the intermediate duties are worth in degrees has not been measured. The
+rpm of every 10% step has been, and is in the curve table above; only the
+temperature column here stops at 20% resolution.
+
 ### Why the steps are 10% and stop at 20%
 
 Holding each duty in turn and reading the tachometer gives a straight line from
@@ -324,7 +329,7 @@ Every interval the script writes one line to `/run/noctua-fan/status`, on
 tmpfs, replaced atomically so a reader never sees a partial line:
 
 ```
-2450rpm 41C
+3913rpm 38C
 off 28C
 ```
 
@@ -339,8 +344,8 @@ Set `STATUS_FILE = None` to turn the feature off.
 The journal carries a fuller line, plus the active mode at startup:
 
 ```
-mode moderate: off <=30C  33C:40% 36C:60% 39C:80% 42C:100%
-37.5C  duty= 60%   3254 rpm
+mode moderate: off <=30C  33C:40% 34.5C:50% 36C:60% 37.5C:70% 39C:80% 40.5C:90% 42C:100%
+38.0C  duty= 70%   3913 rpm
 ```
 
 ---
@@ -435,5 +440,5 @@ sudo sh -c "echo 20000 > $C/pwm0/duty_cycle"   # 50%
 
 ## License
 
-BSD 2-Clause. Copyright (c) 2026, Renaud Allard <renaud@allard.it>.
+BSD 2-Clause. Copyright (c) 2026 Renaud Allard <renaud@allard.it>.
 See [LICENSE](LICENSE).
