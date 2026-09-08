@@ -1,7 +1,28 @@
 # noctua-fan
 
+<p align="center">
+  <a href="https://www.raspberrypi.com/products/raspberry-pi-4-model-b/">
+    <img src="https://img.shields.io/badge/Raspberry%20Pi-4%20Model%20B-C51A4A?logo=raspberrypi&logoColor=white&style=flat-square" alt="Raspberry Pi 4 Model B"/>
+  </a>
+  <a href="https://noctua.at/en/nf-a4x20-5v-pwm">
+    <img src="https://img.shields.io/badge/Noctua-NF--A4x20%205V%20PWM-B8860B?style=flat-square" alt="Noctua NF-A4x20 5V PWM"/>
+  </a>
+  <img src="https://img.shields.io/badge/PWM-hardware%2025%20kHz-0A7BBB?style=flat-square" alt="Hardware PWM at 25 kHz"/>
+  <img src="https://img.shields.io/badge/python-3-3776AB?logo=python&logoColor=white&style=flat-square" alt="Python 3"/>
+  <img src="https://img.shields.io/badge/init-systemd-30B6E6?logo=systemd&logoColor=white&style=flat-square" alt="systemd"/>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/license-BSD--2--Clause-green.svg?style=flat-square" alt="BSD 2-Clause"/>
+  </a>
+  <a href="https://www.paypal.me/RenaudAllard">
+    <img src="https://img.shields.io/badge/PayPal-Donate-blue.svg?logo=paypal&style=flat-square" alt="PayPal"/>
+  </a>
+</p>
+
+---
+
 Temperature-driven speed control for a Noctua NF-A4x20 5V PWM fan on a
-Raspberry Pi 4, using the SoC's hardware PWM.
+Raspberry Pi 4, using the SoC's hardware PWM. One file, no daemon framework,
+no pip packages, four selectable fan curves.
 
 Developed and measured on a Raspberry Pi 4 Model B Rev 1.5 with the fan
 mounted on a Geekworm P122 cooler, running at `arm_freq=2100`. Every
@@ -9,17 +30,53 @@ temperature quoted below is a property of that particular combination of
 heatsink, clock speed, enclosure and room, not of the fan on its own. Treat
 the numbers as a worked example and measure your own.
 
+| | |
+| --- | --- |
+| **Fan** | Noctua NF-A4x20 5V PWM |
+| **Host** | Raspberry Pi 4 Model B |
+| **Control signal** | Hardware PWM0 on GPIO18, 25 kHz |
+| **Feedback** | Tachometer on GPIO24, 2 pulses per revolution |
+| **Default curve** | `moderate` |
+| **Dependencies** | `python3-gpiozero`, `python3-lgpio` |
+| **Status file** | `/run/noctua-fan/status` |
+| **License** | [BSD 2-Clause](LICENSE) |
+
+---
+
+## Table of Contents
+
+- [Why hardware PWM](#why-hardware-pwm)
+- [Wiring](#wiring)
+- [Boot configuration](#boot-configuration)
+- [Install](#install)
+- [Fan curves](#fan-curves)
+- [Choosing a mode](#choosing-a-mode)
+- [What the fan actually buys](#what-the-fan-actually-buys)
+- [Status output](#status-output)
+- [tmux](#tmux)
+- [Verify](#verify)
+- [Setting the speed by hand](#setting-the-speed-by-hand)
+- [Files](#files)
+- [License](#license)
+
+---
+
 ## Why hardware PWM
 
 The fan expects a 25 kHz control signal; 21-28 kHz is supported and outside
 that range it behaves unpredictably. That rules out the two obvious shortcuts:
 
-- `dtoverlay=pwm-gpio-fan` sets a 20 ms period, which is 50 Hz. It is meant
+- **`dtoverlay=pwm-gpio-fan`** sets a 20 ms period, which is 50 Hz. It is meant
   for simple on/off fans, not a Noctua.
-- `RPi.GPIO` software PWM tops out far below 25 kHz and jitters under load.
+- **`RPi.GPIO` software PWM** tops out far below 25 kHz and jitters under load.
 
 So the blue wire goes to a pin backed by the PWM peripheral, driven through
 the kernel's PWM sysfs interface.
+
+No pip packages: the script writes to PWM sysfs directly, which also avoids
+Bookworm's `externally-managed-environment` refusal.
+
+---
 
 ## Wiring
 
@@ -39,6 +96,8 @@ Pi 4 GPIOs are 3.3 V logic and are not 5 V tolerant.
 
 The fan's 4-pin Molex plug does not mate with the header. Use female-to-male
 jumpers, or cut into the supplied NA-EC1 extension rather than the fan lead.
+
+---
 
 ## Boot configuration
 
@@ -65,6 +124,8 @@ USB audio are unaffected.
 If the stock `#dtoverlay=gpio-ir-tx,gpio_pin=18` line has been uncommented at
 some point, it collides with GPIO18 directly.
 
+---
+
 ## Install
 
 ```sh
@@ -78,52 +139,90 @@ sudo systemctl enable noctua-fan.service
 sudo reboot
 ```
 
-No pip packages: the script writes to PWM sysfs directly, which also avoids
-Bookworm's `externally-managed-environment` refusal.
+To run a curve other than the built-in default, drop the mode into
+`/etc/default/noctua-fan`:
 
-## Fan curve
-
-```python
-OFF_AT_OR_BELOW_C = 30.0
-CURVE = [(0, 0), (33, 20), (36, 40), (39, 60), (42, 80), (45, 100)]
-HYSTERESIS_C = 2.0
+```sh
+printf 'NOCTUA_FAN_ARGS="--mode quiet"\n' | sudo tee /etc/default/noctua-fan
+sudo systemctl restart noctua-fan.service
 ```
 
-| CPU temp | Duty | rpm     |
-| -------- | ---- | ------- |
-| <= 30 C  | 0    | stopped |
-| 30-32    | 0    | stopped |
-| 33-35    | 20   | 1042    |
-| 36-38    | 40   | 2249    |
-| 39-41    | 60   | 3372    |
-| 42-44    | 80   | 4390    |
-| >= 45 C  | 100  | 5290    |
+The unit reads that file through `EnvironmentFile=-/etc/default/noctua-fan`.
+The leading `-` makes it optional, and an unset `$NOCTUA_FAN_ARGS` expands to
+zero arguments rather than an empty one, so with no file at all the service
+starts on the default curve.
 
-The rpm column is measured on one fan with the tachometer, a 60 second
-average at each duty during the sweep described below, not interpolated from
-the datasheet. Noctua's anchors are 1100 rpm at 20% and 5000 rpm at 100%, so
-this unit runs slightly faster than spec at the top of its range. Expect your
-own to differ and measure it rather than copying these numbers.
+Confirm which curve is live:
 
-Duty below 20% is undefined for these fans, so the curve steps from 0 to 20
-and never lands in between. The 3 C dead band between "off at 30" and the
-first step at 33 keeps the fan from chattering on and off at idle.
+```sh
+journalctl -u noctua-fan.service | grep '^mode'
+```
 
-`HYSTERESIS_C` applies on cooldown only. Rising temperature steps the speed
-up at once; falling temperature has to drop 2 C below a threshold before the
-speed steps back down. `target_duty()` also has an explicit guard at
-`OFF_AT_OR_BELOW_C`, so widening the hysteresis can never quietly keep the
-fan spinning below the off point.
+---
 
-To run at a fixed speed with no thermal control, replace the curve with a
+## Fan curves
+
+Four curves ship in the `MODES` table at the top of `noctua-fan.py`. Pick one
+with `-m` / `--mode`; `noctua-fan.py --help` prints the same table, rendered
+from `MODES` so it cannot drift from the code.
+
+| Mode | Fan off at or below | Duty steps |
+| ------------ | ---- | ---------------------------------------------- |
+| `quiet`      | 30 C | 33 C:20%, 36 C:40%, 39 C:60%, 42 C:80%, 45 C:100% |
+| `moderate`   | 30 C | 33 C:40%, 36 C:60%, 39 C:80%, 42 C:100%          |
+| `aggressive` | 29 C | 32 C:60%, 35 C:80%, 38 C:100%                    |
+| `maximum`    | 28 C | 31 C:100%                                        |
+
+`moderate` is the default. Measured rpm for each duty on this fan is in
+[What the fan actually buys](#what-the-fan-actually-buys).
+
+Three rules hold across every curve, and a new one should keep them:
+
+- **Nothing lands between 0 and 20% duty.** Below 20% the fan's behaviour is
+  undefined, so each curve steps straight from stopped to at least 20.
+- **The off point sits 3 C below the first step.** That dead band is what stops
+  the fan cycling on and off at idle.
+- **`HYSTERESIS_C` applies on cooldown only**, and at 2 C it is deliberately
+  narrower than that dead band. Rising temperature steps the speed up at once;
+  falling temperature has to drop 2 C below a threshold before the speed steps
+  back down. `target_duty()` also holds an explicit guard at the mode's off
+  point, so widening the hysteresis can never quietly keep the fan spinning
+  below it.
+
+To run at a fixed speed with no thermal control, add a mode whose curve is a
 single entry such as `[(0, 40)]`.
 
-Note that 45 C is far below where the Pi actually needs help: the Arm cores
-are throttled progressively between 80 C and 85 C, and the Pi 4 has no soft
-limit below that. Measured here, sustained full load with the fan stopped
-settles at 63.8 C, still well clear of that. This curve trades noise for
-headroom, and under sustained load it pins at 100%, because every duty step
-leaves the CPU above the 45 C threshold.
+---
+
+## Choosing a mode
+
+The choice only ever changes behaviour in the idle band. Replaying all four
+curves against the measured duty-to-temperature map below shows every one of
+them settling at 100% under sustained full load, reached in a single step from
+a stopped fan. Under load the curves are indistinguishable.
+
+Duty each mode commands at a given temperature, straight from `MODES`:
+
+| CPU temp | `quiet` | `moderate` | `aggressive` | `maximum` |
+| -------- | ------- | ---------- | ------------ | --------- |
+| 30 C     | 0       | 0          | 0            | 0         |
+| 31 C     | 0       | 0          | 0            | 100%      |
+| 32 C     | 0       | 0          | 60%          | 100%      |
+| 33-34 C  | 20%     | 40%        | 60%          | 100%      |
+| 35 C     | 20%     | 40%        | 80%          | 100%      |
+| 36-37 C  | 40%     | 60%        | 80%          | 100%      |
+| 38 C     | 40%     | 60%        | 100%         | 100%      |
+| 39-41 C  | 60%     | 80%        | 100%         | 100%      |
+| 42-44 C  | 80%     | 100%       | 100%         | 100%      |
+| 45 C     | 100%    | 100%       | 100%         | 100%      |
+
+Read that against your own idle temperature, which is the figure that decides
+how loud the machine is nearly all the time. Note that these thresholds are far
+below where a Pi 4 needs help: the Arm cores throttle progressively between
+80 C and 85 C, and there is no soft limit below that. Every curve here trades
+noise for headroom rather than protecting the SoC.
+
+---
 
 ## What the fan actually buys
 
@@ -144,32 +243,45 @@ so these figures describe that pairing. A different cooler moves every row.
 | 80%  | 4390 | 49.1 C | -14.7      | -1.7      | 1.64           |
 | 100% | 5290 | 48.2 C | -15.6      | -0.9      | 1.02           |
 
+The rpm column is measured on one fan with the tachometer, not interpolated
+from the datasheet. Noctua's anchors are 1100 rpm at 20% and 5000 rpm at 100%,
+so this unit runs slightly faster than spec at the top of its range. Expect
+your own to differ and measure it rather than copying these numbers.
+
 Three things follow.
 
-The entire range available to any control law is 8 C. Going from minimum spin
-to maximum, 1042 to 5290 rpm and 408% more air, moves the CPU 8 C. Cooling
-efficiency falls sevenfold across the sweep: the first 1042 rpm is worth
-7.6 C, the last 1919 rpm is worth 2.6 C. Nothing clever in the control loop
-can beat holding 100%, and holding 100% is only 8 C better than idling the
-fan at its floor.
+**The entire range available to any control law is 8 C.** Going from minimum
+spin to maximum, 1042 to 5290 rpm and 408% more air, moves the CPU 8 C. Cooling
+efficiency falls sevenfold across the sweep: the first 1042 rpm is worth 7.6 C,
+the last 1919 rpm is worth 2.6 C. Nothing clever in the control loop can beat
+holding 100%, and holding 100% is only 8 C better than idling the fan at its
+floor.
 
-The top of the curve is close to free to give up. 60% duty already captures
+**The top of the curve is close to free to give up.** 60% duty already captures
 13.0 of the 15.6 C on offer, and the step from 80% to 100% buys 0.9 C in
-exchange for the loudest state the fan has. Capping the curve below 100%
-costs very little and is noticeably quieter.
+exchange for the loudest state the fan has. Capping a curve below 100% costs
+very little and is noticeably quieter.
 
-The fan is a comfort device here rather than a protective one. With it
-stopped completely, sustained full load settled at 63.8 C, and
-`vcgencmd get_throttled` read 0x0 both before and after. Ambient temperature
-and the enclosure will move that figure, so repeat the sweep rather than
-assuming it.
+**The fan is a comfort device here rather than a protective one.** With it
+stopped completely, sustained full load settled at 63.8 C, still well clear of
+the 80 C throttle point, and `vcgencmd get_throttled` read 0x0 both before and
+after. Ambient temperature and the enclosure will move that figure, so repeat
+the sweep rather than assuming it.
 
 To repeat it: stop the service, drive the duty by hand as shown under
-"Setting the speed by hand" below, hold a constant load, and average
-`/sys/class/thermal/thermal_zone0/temp` over a minute once the reading has
-stopped drifting. Watch the temperature while the fan is stopped and give
-yourself an abort threshold below 80 C, where the firmware starts throttling
-and the load stops being constant.
+[Setting the speed by hand](#setting-the-speed-by-hand), hold a constant load,
+and average `/sys/class/thermal/thermal_zone0/temp` over a minute once the
+reading has stopped drifting. Watch the temperature while the fan is stopped
+and give yourself an abort threshold below 80 C, where the firmware starts
+throttling and the load stops being constant.
+
+A caveat on the 150 second settle: at low duty there is far less airflow, the
+thermal time constant is correspondingly longer, and the 0% and 20% rows are
+the ones most likely to have been read before they were fully settled. The
+sweep ran descending, so every step heats toward a higher equilibrium and an
+unsettled reading is below the true value, never above.
+
+---
 
 ## Status output
 
@@ -188,6 +300,15 @@ a stopped service. Add `RuntimeDirectoryPreserve=restart` if the last reading
 should survive a restart.
 
 Set `STATUS_FILE = None` to turn the feature off.
+
+The journal carries a fuller line, plus the active mode at startup:
+
+```
+mode moderate: off <=30C  33C:40% 36C:60% 39C:80% 42C:100%
+37.5C  duty= 60%   3254 rpm
+```
+
+---
 
 ## tmux
 
@@ -216,6 +337,8 @@ sudo sh -c 'echo "test 60% ok" > /run/noctua-fan/status'
 If the status bar shows it intact, the duty cycle can be added to the
 published line. The service overwrites the file on its next tick either way.
 
+---
+
 ## Verify
 
 ```sh
@@ -243,6 +366,8 @@ sudo apt install -y stress-ng
 stress-ng --cpu 4 --timeout 180s
 ```
 
+---
+
 ## Setting the speed by hand
 
 Stop the service first or the two fight over the same file.
@@ -260,10 +385,20 @@ sudo sh -c "echo 20000 > $C/pwm0/duty_cycle"   # 50%
 
 `duty_cycle` may never exceed `period`, which is why the order matters.
 
+---
+
 ## Files
 
-| File                | Installed as                                |
-| ------------------- | ------------------------------------------- |
-| `noctua-fan.py`     | `/usr/local/bin/noctua-fan.py`              |
-| `noctua-fan.service`| `/etc/systemd/system/noctua-fan.service`    |
-| `tmux-status.conf`  | appended to `~/.tmux.conf`                  |
+| File                 | Installed as                             | Purpose                          |
+| -------------------- | ---------------------------------------- | -------------------------------- |
+| `noctua-fan.py`      | `/usr/local/bin/noctua-fan.py`           | the controller                   |
+| `noctua-fan.service` | `/etc/systemd/system/noctua-fan.service` | unit, reads the file below       |
+| -                    | `/etc/default/noctua-fan`                | optional, sets `NOCTUA_FAN_ARGS` |
+| `tmux-status.conf`   | appended to `~/.tmux.conf`               | status-bar lines                 |
+
+---
+
+## License
+
+BSD 2-Clause. Copyright (c) 2026, Renaud Allard <renaud@allard.it>.
+See [LICENSE](LICENSE).
