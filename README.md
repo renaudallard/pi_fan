@@ -87,6 +87,10 @@ Bookworm's `externally-managed-environment` refusal.
 | Blue     | PWM in   | 12                | 18  |
 | Green    | Tach out | 18                | 24  |
 
+<p align="center">
+  <img src="images/wiring.jpg" alt="NF-A4x20 mounted on the Geekworm P122, with the four leads run to the GPIO header" width="420"/>
+</p>
+
 On this fan yellow is +5 V power, not a signal. Current draw is 0.1 A max.
 
 No level shifter is needed on the blue wire: Noctua fans read both 3.3 V and
