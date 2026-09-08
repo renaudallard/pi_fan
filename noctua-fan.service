@@ -1,0 +1,13 @@
+[Unit]
+Description=Noctua NF-A4x20 5V PWM fan control
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/noctua-fan.py
+RuntimeDirectory=noctua-fan
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
