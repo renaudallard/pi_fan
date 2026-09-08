@@ -3,6 +3,12 @@
 Temperature-driven speed control for a Noctua NF-A4x20 5V PWM fan on a
 Raspberry Pi 4, using the SoC's hardware PWM.
 
+Developed and measured on a Raspberry Pi 4 Model B Rev 1.5 with the fan
+mounted on a Geekworm P122 cooler, running at `arm_freq=2100`. Every
+temperature quoted below is a property of that particular combination of
+heatsink, clock speed, enclosure and room, not of the fan on its own. Treat
+the numbers as a worked example and measure your own.
+
 ## Why hardware PWM
 
 The fan expects a 25 kHz control signal; 21-28 kHz is supported and outside
@@ -125,6 +131,9 @@ Measured with `stress-ng --cpu 4` running unchanged across the whole sweep,
 descending through the duty steps with 150 seconds to settle and a 60 second
 average at each. The CPU held 2100 MHz at every point, so the heat input was
 identical throughout and nothing was thermally capped.
+
+The heatsink is a Geekworm P122 and the board is clocked at `arm_freq=2100`,
+so these figures describe that pairing. A different cooler moves every row.
 
 | Duty | rpm  | Temp   | vs fan off | Step gain | C per 1000 rpm |
 | ---- | ---- | ------ | ---------- | --------- | -------------- |
