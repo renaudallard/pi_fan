@@ -170,28 +170,47 @@ Four curves ship in the `MODES` table at the top of `noctua-fan.py`. Pick one
 with `-m` / `--mode`; `noctua-fan.py --help` prints the same table, rendered
 from `MODES` so it cannot drift from the code.
 
-| Mode | Fan off at or below | Duty steps |
-| ------------ | ---- | ---------------------------------------------- |
-| `quiet`      | 30 C | 33 C:20%, 36 C:40%, 39 C:60%, 42 C:80%, 45 C:100% |
-| `moderate`   | 30 C | 33 C:40%, 36 C:60%, 39 C:80%, 42 C:100%          |
-| `aggressive` | 29 C | 32 C:60%, 35 C:80%, 38 C:100%                    |
-| `maximum`    | 28 C | 31 C:100%                                        |
+Every curve moves in 10% steps of duty, 1.5 C apart. The table reads as the
+temperature at which each mode first asks for a given speed, so find your own
+idle temperature in the rpm column's neighbourhood and read across.
 
-`moderate` is the default. Measured rpm for each duty on this fan is in
-[What the fan actually buys](#what-the-fan-actually-buys).
+| Duty | rpm | `quiet` | `moderate` | `aggressive` | `maximum` |
+| ---- | ---- | ------- | ---------- | ------------ | --------- |
+| off | 0 | <=30 C | <=30 C | <=29 C | <=28 C |
+| 20% | 1140 | 33 C | - | - | - |
+| 30% | 1818 | 34.5 C | - | - | - |
+| 40% | 2418 | 36 C | 33 C | - | - |
+| 50% | 2976 | 37.5 C | 34.5 C | - | - |
+| 60% | 3504 | 39 C | 36 C | 32 C | - |
+| 70% | 3978 | 40.5 C | 37.5 C | 33.5 C | - |
+| 80% | 4422 | 42 C | 39 C | 35 C | - |
+| 90% | 4812 | 43.5 C | 40.5 C | 36.5 C | - |
+| 100% | 5208 | 45 C | 42 C | 38 C | 31 C |
 
-Three rules hold across every curve, and a new one should keep them:
+`moderate` is the default. The rpm column was measured on this fan with the
+tachometer, holding each duty in turn; expect your own to differ.
 
-- **Nothing lands between 0 and 20% duty.** Below 20% the fan's behaviour is
-  undefined, so each curve steps straight from stopped to at least 20.
+Four rules hold across every curve, and a new one should keep them:
+
+- **Nothing lands between 0 and 20% duty.** Above 20% this fan is linear in
+  duty, near enough 50 rpm per percent. Below it the fan leaves that line
+  entirely: 10% duty turns at about 410 rpm where the fit predicts 840. It does
+  still start and run steadily there on this unit, but Noctua specifies nothing
+  below 20%, so no curve relies on it.
+- **Steps are 10% of duty and 1.5 C apart.** One step is worth about 500 rpm,
+  which is a change you can hear as a new speed rather than as a jump.
 - **The off point sits 3 C below the first step.** That dead band is what stops
   the fan cycling on and off at idle.
-- **`HYSTERESIS_C` applies on cooldown only**, and at 2 C it is deliberately
-  narrower than that dead band. Rising temperature steps the speed up at once;
-  falling temperature has to drop 2 C below a threshold before the speed steps
-  back down. `target_duty()` also holds an explicit guard at the mode's off
-  point, so widening the hysteresis can never quietly keep the fan spinning
-  below it.
+- **`HYSTERESIS_C` applies on cooldown only.** Rising temperature steps the
+  speed up at once; falling temperature has to drop 2 C below a threshold
+  before the speed steps back down. At 2 C it is wider than the 1.5 C between
+  steps, so a cooling CPU gives up more than one step at a time. `target_duty()`
+  only ever uses it to lower the duty, and it holds a separate guard at the
+  mode's off point, so widening it can never quietly keep the fan spinning
+  below that point.
+
+`maximum` keeps a single step on purpose: it means full speed whenever the fan
+turns at all, and subdividing it would make it something other than maximum.
 
 To run at a fixed speed with no thermal control, add a mode whose curve is a
 single entry such as `[(0, 40)]`.
@@ -203,28 +222,14 @@ single entry such as `[(0, 40)]`.
 The choice only ever changes behaviour in the idle band. Replaying all four
 curves against the measured duty-to-temperature map below shows every one of
 them settling at 100% under sustained full load, reached in a single step from
-a stopped fan. Under load the curves are indistinguishable.
+a stopped fan. Under load the curves are indistinguishable, so pick on how loud
+you want the machine at rest.
 
-Duty each mode commands at a given temperature, straight from `MODES`:
-
-| CPU temp | `quiet` | `moderate` | `aggressive` | `maximum` |
-| -------- | ------- | ---------- | ------------ | --------- |
-| 30 C     | 0       | 0          | 0            | 0         |
-| 31 C     | 0       | 0          | 0            | 100%      |
-| 32 C     | 0       | 0          | 60%          | 100%      |
-| 33-34 C  | 20%     | 40%        | 60%          | 100%      |
-| 35 C     | 20%     | 40%        | 80%          | 100%      |
-| 36-37 C  | 40%     | 60%        | 80%          | 100%      |
-| 38 C     | 40%     | 60%        | 100%         | 100%      |
-| 39-41 C  | 60%     | 80%        | 100%         | 100%      |
-| 42-44 C  | 80%     | 100%       | 100%         | 100%      |
-| 45 C     | 100%    | 100%       | 100%         | 100%      |
-
-Read that against your own idle temperature, which is the figure that decides
-how loud the machine is nearly all the time. Note that these thresholds are far
-below where a Pi 4 needs help: the Arm cores throttle progressively between
-80 C and 85 C, and there is no soft limit below that. Every curve here trades
-noise for headroom rather than protecting the SoC.
+Read the curve table above against your own idle temperature, which is the
+figure that decides how the machine sounds nearly all the time. Note that these
+thresholds are far below where a Pi 4 needs help: the Arm cores throttle
+progressively between 80 C and 85 C, and there is no soft limit below that.
+Every curve here trades noise for headroom rather than protecting the SoC.
 
 ---
 
@@ -284,6 +289,32 @@ thermal time constant is correspondingly longer, and the 0% and 20% rows are
 the ones most likely to have been read before they were fully settled. The
 sweep ran descending, so every step heats toward a higher equilibrium and an
 unsettled reading is below the true value, never above.
+
+### Why the steps are 10% and stop at 20%
+
+Holding each duty in turn and reading the tachometer gives a straight line from
+20% upwards: `rpm = 50.4 x duty + 338`, with an R2 of 0.9916 over the nine
+points from 20 to 100%. A 10% step is therefore worth about 504 rpm anywhere in
+that range, which is why the curves can afford steps that fine and why each one
+is audible as a distinct speed rather than as a jump.
+
+Below 20% the line stops describing the fan. At 10% duty it settles at 408 rpm
+where the fit predicts 842, roughly half the speed the trend calls for. It runs
+steadily there rather than erratically, and on this unit it does start from a
+standstill, but it is outside the range Noctua specifies and another fan need
+not behave the same way. That is the reason no curve puts a step between 0
+and 20%.
+
+Started from a full stop rather than coasted down to, the low duties measure
+426 rpm at 10%, 762 rpm at 15%, 1092 rpm at 20% and 1397 rpm at 25%. The fan
+started every time, so 20% is a specification floor here rather than an observed
+failure.
+
+These rpm figures come from a shorter run than the thermal sweep above, five
+seconds per point rather than a sixty second average, and at idle rather than
+under load. They sit within about 8% of the sweep's numbers, which is what the
+shorter window and the lighter load account for. Where a single coherent set of
+duty, rpm and temperature matters, use the sweep table.
 
 ---
 

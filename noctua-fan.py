@@ -40,6 +40,7 @@ import glob
 import os
 import signal
 import sys
+import textwrap
 import time
 
 from gpiozero import DigitalInputDevice  # type: ignore[import-untyped]
@@ -55,14 +56,54 @@ INTERVAL = 2.0  # seconds between decisions
 # temperature at or below which the fan stops completely, in both directions,
 # and the (CPU temp in C, duty cycle %) steps in ascending order.
 #
+# Steps are 10% of duty, 1.5 C apart. Measured on this fan rpm is linear in
+# duty from 20% upwards, near enough 50 rpm per percent, so each step is worth
+# about 500 rpm and reads as a separate speed rather than a jump. Below 20%
+# the fan leaves that linear range: 10% duty turns at about 410 rpm where the
+# fit predicts 840, and Noctua specifies nothing down there, so no curve lands
+# between 0 and 20.
+#
 # Every mode holds its off point 3 C below its first step. That dead band is
 # what keeps the fan from chattering on and off at idle, so a new mode should
-# preserve it. Duty below 20% is undefined for these fans, so no curve lands
-# between 0 and 20.
+# preserve it. HYSTERESIS_C is wider than one step, so a cooling CPU gives up
+# more than one step at a time. That is intended: target_duty() only ever uses
+# it to lower the duty, never to raise it.
+#
+# maximum has a single step on purpose. It means full speed whenever the fan
+# runs at all, and subdividing it would make it something other than maximum.
 MODES = {
-    "quiet": (30.0, [(0, 0), (33, 20), (36, 40), (39, 60), (42, 80), (45, 100)]),
-    "moderate": (30.0, [(0, 0), (33, 40), (36, 60), (39, 80), (42, 100)]),
-    "aggressive": (29.0, [(0, 0), (32, 60), (35, 80), (38, 100)]),
+    "quiet": (
+        30.0,
+        [
+            (0, 0),
+            (33, 20),
+            (34.5, 30),
+            (36, 40),
+            (37.5, 50),
+            (39, 60),
+            (40.5, 70),
+            (42, 80),
+            (43.5, 90),
+            (45, 100),
+        ],
+    ),
+    "moderate": (
+        30.0,
+        [
+            (0, 0),
+            (33, 40),
+            (34.5, 50),
+            (36, 60),
+            (37.5, 70),
+            (39, 80),
+            (40.5, 90),
+            (42, 100),
+        ],
+    ),
+    "aggressive": (
+        29.0,
+        [(0, 0), (32, 60), (33.5, 70), (35, 80), (36.5, 90), (38, 100)],
+    ),
     "maximum": (28.0, [(0, 0), (31, 100)]),
 }
 DEFAULT_MODE = "moderate"
@@ -178,17 +219,32 @@ def target_duty(temp, current, off_at, curve):
     return min(current, falling)
 
 
+def mode_steps(name):
+    """The duty steps of a curve, as "33C:20% 34.5C:30% ..."."""
+    _, curve = MODES[name]
+    return " ".join(f"{t:g}C:{d}%" for t, d in curve if d)
+
+
 def mode_summary(name):
-    """One line describing a curve, shared by --help and the startup log."""
-    off_at, curve = MODES[name]
-    steps = " ".join(f"{t}C:{d}%" for t, d in curve if d)
-    return f"off <={off_at:.0f}C  {steps}"
+    """One line describing a curve, for the startup log."""
+    off_at, _ = MODES[name]
+    return f"off <={off_at:.0f}C  {mode_steps(name)}"
 
 
 def mode_help():
-    """Render the curve table so --help can never drift from MODES."""
+    """Render the curve table so --help can never drift from MODES.
+
+    Ten steps do not fit on one line, so the steps are wrapped under the name.
+    """
     lines = ["fan curves:"]
-    lines += [f"  {name:<11} {mode_summary(name)}" for name in MODES]
+    for name, (off_at, _) in MODES.items():
+        lines.append(f"  {name:<11} off <={off_at:.0f}C")
+        lines += textwrap.wrap(
+            mode_steps(name),
+            width=62,
+            initial_indent=" " * 14,
+            subsequent_indent=" " * 14,
+        )
     return "\n".join(lines)
 
 
