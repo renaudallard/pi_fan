@@ -222,35 +222,43 @@ single entry such as `[(0, 40)]`.
 The choice only ever changes behaviour in the idle band. Replaying all four
 curves against the measured duty-to-temperature map below shows every one of
 them settling at 100% under sustained full load, reached in a single step from
-a stopped fan. Under load the curves are indistinguishable, so pick on how loud
-you want the machine at rest.
+the lowest duty the sweep measured. Under load the curves are
+indistinguishable, so pick on how loud you want the machine at rest.
 
 Read the curve table above against your own idle temperature, which is the
 figure that decides how the machine sounds nearly all the time. Note that these
 thresholds are far below where a Pi 4 needs help: the Arm cores throttle
 progressively between 80 C and 85 C, and there is no soft limit below that.
-Every curve here trades noise for headroom rather than protecting the SoC.
+How much headroom a stopped fan leaves is no longer a settled question, so
+treat the curves as trading noise against margin rather than as decoration;
+see [What the fan actually buys](#what-the-fan-actually-buys).
 
 ---
 
 ## What the fan actually buys
 
 Measured with `stress-ng --cpu 4` running unchanged across the whole sweep,
-descending through the duty steps with 150 seconds to settle and a 60 second
-average at each. The CPU held 2100 MHz at every point, so the heat input was
-identical throughout and nothing was thermally capped.
+descending through the duty steps in 10% increments. Each point was held until
+the temperature stopped moving rather than for a fixed time: a least squares
+slope over a trailing 90 second window had to stay under 0.15 C per minute
+twice in succession before the reading was taken, and the reading itself is a
+90 second average. The CPU held 2100 MHz for all 6868 samples, so the heat
+input was identical throughout and nothing was thermally capped.
 
 The heatsink is a Geekworm P122 and the board is clocked at `arm_freq=2100`,
 so these figures describe that pairing. A different cooler moves every row.
 
-| Duty | rpm  | Temp   | vs fan off | Step gain | C per 1000 rpm |
-| ---- | ---- | ------ | ---------- | --------- | -------------- |
-| 0%   |    0 | 63.8 C |            |           |                |
-| 20%  | 1042 | 56.2 C | -7.6       | -7.6      | 7.30           |
-| 40%  | 2249 | 53.0 C | -10.8      | -3.2      | 2.65           |
-| 60%  | 3372 | 50.8 C | -13.0      | -2.2      | 1.98           |
-| 80%  | 4390 | 49.1 C | -14.7      | -1.7      | 1.64           |
-| 100% | 5290 | 48.2 C | -15.6      | -0.9      | 1.02           |
+| Duty | rpm  | Temp    | vs 100% | Step gain | C per 1000 rpm |
+| ---- | ---- | ------- | ------- | --------- | -------------- |
+| 20%  | 1088 | 63.36 C | +15.59  |           |                |
+| 30%  | 1670 | 56.86 C | +9.10   | -6.50     | 11.16          |
+| 40%  | 2231 | 53.77 C | +6.00   | -3.10     | 5.52           |
+| 50%  | 2808 | 51.79 C | +4.02   | -1.98     | 3.43           |
+| 60%  | 3358 | 50.86 C | +3.09   | -0.93     | 1.69           |
+| 70%  | 3874 | 49.87 C | +2.10   | -0.99     | 1.92           |
+| 80%  | 4386 | 48.82 C | +1.05   | -1.05     | 2.05           |
+| 90%  | 4849 | 48.48 C | +0.71   | -0.34     | 0.74           |
+| 100% | 5323 | 47.77 C | 0       | -0.71     | 1.50           |
 
 The rpm column is measured on one fan with the tachometer, not interpolated
 from the datasheet. Noctua's anchors are 1100 rpm at 20% and 5000 rpm at 100%,
@@ -259,41 +267,60 @@ your own to differ and measure it rather than copying these numbers.
 
 Three things follow.
 
-**The entire range available to any control law is 8 C.** Going from minimum
-spin to maximum, 1042 to 5290 rpm and 408% more air, moves the CPU 8 C. Cooling
-efficiency falls sevenfold across the sweep: the first 1042 rpm is worth 7.6 C,
-the last 1919 rpm is worth 2.6 C. Nothing clever in the control loop can beat
-holding 100%, and holding 100% is only 8 C better than idling the fan at its
-floor.
+**The range is at least 15.6 C, not the 8 C first published.** Between 20% and
+100% duty, 1088 to 5323 rpm, the CPU moves 15.59 C. An earlier sweep put the
+same span at 8 C because it gave every point a fixed 150 seconds to settle,
+which is not long enough where it matters: 20% took 616 seconds to flatten
+here, and the figure the old method produced at that duty was 7.14 C too low.
 
-**The top of the curve is close to free to give up.** 60% duty already captures
-13.0 of the 15.6 C on offer, and the step from 80% to 100% buys 0.9 C in
-exchange for the loudest state the fan has. Capping a curve below 100% costs
-very little and is noticeably quieter.
+**The top of the curve is close to free to give up.** 50% duty gives away
+4.02 C against 100% while turning at little over half the speed. The bottom is
+where the temperature is decided: the single step from 30% to 20% costs 6.50 C,
+more than the whole span from 50% up to 100%. Cooling efficiency falls by
+roughly a factor of six across the range, 11.16 C per 1000 rpm on the lowest
+step against 1.69 to 2.05 in the 60 to 80% band. Capping a curve below 100%
+costs very little, and letting one fall below 30% costs a great deal.
 
-**The fan is a comfort device here rather than a protective one.** With it
-stopped completely, sustained full load settled at 63.8 C, still well clear of
-the 80 C throttle point, and `vcgencmd get_throttled` read 0x0 both before and
-after. Ambient temperature and the enclosure will move that figure, so repeat
-the sweep rather than assuming it.
+**What a stopped fan does is no longer known.** The earlier sweep recorded
+63.8 C at 0% duty, and this README concluded from it that the fan was a comfort
+device rather than a protective one. That conclusion is withdrawn. The same
+63.8 C is within half a degree of what 20% duty holds here with the fan turning
+at 1088 rpm, which cannot both be right, and the old 0% row carries the same
+under-settling error as its 20% row. The run that would have replaced it was
+cut short by a reboot during the 10% step, by which point the CPU had reached
+72.06 C and was still climbing at 0.93 C per minute. Where a stopped fan
+settles is unmeasured, materially higher than the figure previously published,
+and possibly close enough to the 80 C throttle point to matter.
+
+Settle time is what the first sweep got wrong, and it grows sharply as duty
+falls: 100 seconds at 100% duty, 189 at 70%, 320 at 30% and 616 at 20%. Less
+airflow means a longer thermal time constant. The sweep runs descending, so
+every step heats toward a higher equilibrium and a reading taken too early sits
+below the true value, never above, which is the direction the original figures
+erred in.
+
+These readings are better settled than the first sweep's rather than fully
+settled, and the table should be read with that in mind. The criterion accepted
+trailing slopes between 0.091 and 0.141 C per minute, and then every one of the
+nine points drifted upward again during its 90 second measurement, by 0.29 to
+0.47 C per minute and 0.36 on average. Stopping as soon as two consecutive
+windows read flat biases the test toward stopping on a downward fluctuation, so
+every figure here is still low by an unknown amount, in the same direction as
+before and far smaller than the 7.14 C the fixed timer cost at 20%. One
+consequence is worth naming: the 90% to 80% step of 0.34 C is smaller than the
+0.55 C standard deviation within either point, so those two duties are not
+resolved from each other. Every other step in the table is larger than the
+noise inside it.
 
 To repeat it: stop the service, drive the duty by hand as shown under
 [Setting the speed by hand](#setting-the-speed-by-hand), hold a constant load,
-and average `/sys/class/thermal/thermal_zone0/temp` over a minute once the
-reading has stopped drifting. Watch the temperature while the fan is stopped
-and give yourself an abort threshold below 80 C, where the firmware starts
-throttling and the load stops being constant.
+and average `/sys/class/thermal/thermal_zone0/temp` once the reading has
+stopped drifting rather than after a fixed wait. Watch the temperature while
+the fan is slow and give yourself an abort threshold below 80 C, where the
+firmware starts throttling and the load stops being constant.
 
-A caveat on the 150 second settle: at low duty there is far less airflow, the
-thermal time constant is correspondingly longer, and the 0% and 20% rows are
-the ones most likely to have been read before they were fully settled. The
-sweep ran descending, so every step heats toward a higher equilibrium and an
-unsettled reading is below the true value, never above.
-
-This sweep predates the move to 10% curve steps and still moves in 20% ones, so
-what the intermediate duties are worth in degrees has not been measured. The
-rpm of every 10% step has been, and is in the curve table above; only the
-temperature column here stops at 20% resolution.
+The 10% and 0% rows are still open. Everything from 20% up settled to the
+criterion above.
 
 ### Why the steps are 10% and stop at 20%
 
