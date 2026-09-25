@@ -32,22 +32,22 @@ Wiring (Noctua NF-A4x20 5V PWM):
     Green   Tach   -> physical pin 18  (GPIO24, internal pull-up)
 
 Requires 'dtoverlay=pwm-2chan' in /boot/firmware/config.txt.
-Requires: sudo apt install -y python3-gpiozero python3-lgpio
 """
 
 import argparse
+import fcntl
 import glob
 import os
 import signal
+import struct
 import sys
 import textwrap
 import time
 
-from gpiozero import DigitalInputDevice  # type: ignore[import-untyped]
-
 # ---- configuration ---------------------------------------------------------
 PWM_CHANNEL = 0  # channel 0 == GPIO18 under dtoverlay=pwm-2chan
 PWM_PERIOD_NS = 40_000  # 40 us == 25 kHz (Noctua target frequency)
+TACH_CHIP = "/dev/gpiochip0"  # pinctrl-bcm2711, line N == GPIO N
 TACH_GPIO = 24  # BCM numbering
 PULSES_PER_REV = 2
 INTERVAL = 2.0  # seconds between decisions
@@ -119,6 +119,22 @@ STATUS_FILE = "/run/noctua-fan/status"
 PWM_DEVICE_SUFFIX = "fe20c000.pwm"
 # ---------------------------------------------------------------------------
 
+# GPIO character device ABI, from <linux/gpio.h>.
+GPIO_V2_GET_LINE_IOCTL = 0xC250B407
+GPIO_V2_LINE_FLAG_INPUT = 1 << 2
+GPIO_V2_LINE_FLAG_EDGE_RISING = 1 << 4
+GPIO_V2_LINE_FLAG_EDGE_FALLING = 1 << 5
+GPIO_V2_LINE_FLAG_BIAS_PULL_UP = 1 << 8
+GPIO_V2_LINE_EVENT_FALLING_EDGE = 2
+LINE_REQUEST_SIZE = 592  # struct gpio_v2_line_request
+LINE_REQUEST_CONSUMER = 256
+LINE_REQUEST_FLAGS = 288  # .config.flags
+LINE_REQUEST_NUM_LINES = 560
+LINE_REQUEST_BUFSIZE = 564  # .event_buffer_size
+LINE_REQUEST_FD = 588
+LINE_EVENT_SIZE = 48  # struct gpio_v2_line_event
+LINE_EVENTS = 16  # queued by the kernel between reads
+
 
 def find_pwmchip():
     """Return the sysfs path of the SoC PWM block, not a guessed number."""
@@ -165,23 +181,71 @@ class Pwm:
 
 
 class Tach:
-    def __init__(self, gpio):
-        self._count = 0
-        self._t0 = time.monotonic()
-        # pull_up=True -> internal pull-up; "activated" == line pulled low
-        self._dev = DigitalInputDevice(gpio, pull_up=True)
-        self._dev.when_activated = self._tick
+    """Count tach edges in the kernel and read them once per call.
 
-    def _tick(self):
-        self._count += 1
+    The kernel queues an event for every edge, numbered per line and stamped
+    with CLOCK_MONOTONIC. When the queue is full it drops the oldest event but
+    keeps numbering, so the newest falling edge alone gives the number of
+    edges since the previous call and the time they took, with nothing
+    running in between.
+
+    Both edges are watched although one per pulse would do. Asked for falling
+    edges only, the GPIO controller also reports some rising ones, about 4%
+    extra pulses below full speed. It latches edges in a single status bit
+    per pin, so when it watches both, a stray edge next to a real one is
+    reported with it rather than on its own.
+    """
+
+    def __init__(self, chip, line):
+        req = bytearray(LINE_REQUEST_SIZE)
+        struct.pack_into("<I", req, 0, line)
+        struct.pack_into("<32s", req, LINE_REQUEST_CONSUMER, b"noctua-fan")
+        struct.pack_into(
+            "<Q",
+            req,
+            LINE_REQUEST_FLAGS,
+            GPIO_V2_LINE_FLAG_INPUT
+            | GPIO_V2_LINE_FLAG_EDGE_RISING
+            | GPIO_V2_LINE_FLAG_EDGE_FALLING
+            | GPIO_V2_LINE_FLAG_BIAS_PULL_UP,
+        )
+        struct.pack_into("<II", req, LINE_REQUEST_NUM_LINES, 1, LINE_EVENTS)
+        try:
+            fd = os.open(chip, os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                fcntl.ioctl(fd, GPIO_V2_GET_LINE_IOCTL, req)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            sys.exit(f"Cannot request GPIO{line} on {chip}: {e.strerror}")
+        (self._fd,) = struct.unpack_from("<i", req, LINE_REQUEST_FD)
+        os.set_blocking(self._fd, False)
+        self._seq = 0  # the first edge is numbered 1
+        self._ns = time.monotonic_ns()
 
     def read_rpm(self):
-        now = time.monotonic()
-        elapsed, self._t0 = now - self._t0, now
-        pulses, self._count = self._count, 0
+        try:
+            buf = os.read(self._fd, LINE_EVENT_SIZE * LINE_EVENTS)
+        except BlockingIOError:
+            buf = b""
+        # Anchor on a falling edge so the window spans whole periods however
+        # uneven the high and low halves of the tach signal are.
+        for off in range(len(buf) - LINE_EVENT_SIZE, -1, -LINE_EVENT_SIZE):
+            ns, kind, seq = struct.unpack_from("<QI8xI", buf, off)
+            if kind == GPIO_V2_LINE_EVENT_FALLING_EDGE:
+                break
+        else:
+            # No falling edge since the last call: the fan is stopped. Restart
+            # the window here so the first reading after a restart is not
+            # averaged over the whole time it was off.
+            self._ns = time.monotonic_ns()
+            return 0.0
+        edges = (seq - self._seq) & 0xFFFFFFFF
+        elapsed = ns - self._ns
+        self._seq, self._ns = seq, ns
         if elapsed <= 0:
             return 0.0
-        return (pulses / elapsed) * 60.0 / PULSES_PER_REV
+        return edges / 2 * 1e9 / elapsed * 60.0 / PULSES_PER_REV
 
 
 def cpu_temp():
@@ -271,7 +335,7 @@ def main():
     off_at, curve = MODES[args.mode]
 
     pwm = Pwm(find_pwmchip(), PWM_CHANNEL, PWM_PERIOD_NS)
-    tach = Tach(TACH_GPIO)
+    tach = Tach(TACH_CHIP, TACH_GPIO)
     duty = 100
     pwm.set_duty(duty)
 

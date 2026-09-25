@@ -37,7 +37,7 @@ the numbers as a worked example and measure your own.
 | **Control signal** | Hardware PWM0 on GPIO18, 25 kHz |
 | **Feedback** | Tachometer on GPIO24, 2 pulses per revolution |
 | **Default curve** | `moderate` |
-| **Dependencies** | `python3-gpiozero`, `python3-lgpio` |
+| **Dependencies** | None beyond Python 3 |
 | **Status file** | `/run/noctua-fan/status` |
 | **License** | [BSD 2-Clause](LICENSE) |
 
@@ -73,8 +73,9 @@ that range it behaves unpredictably. That rules out the two obvious shortcuts:
 So the blue wire goes to a pin backed by the PWM peripheral, driven through
 the kernel's PWM sysfs interface.
 
-No pip packages: the script writes to PWM sysfs directly, which also avoids
-Bookworm's `externally-managed-environment` refusal.
+Nothing to install beyond Python: the script writes to PWM sysfs directly and
+reads the tachometer through the kernel's GPIO character device, which also
+avoids Bookworm's `externally-managed-environment` refusal.
 
 ---
 
@@ -97,6 +98,11 @@ No level shifter is needed on the blue wire: Noctua fans read both 3.3 V and
 5 V as logical high. The green wire is an open-collector output and needs a
 pull-up; the script enables the pin's internal one. Do not pull it up to 5 V,
 Pi 4 GPIOs are 3.3 V logic and are not 5 V tolerant.
+
+The kernel counts and timestamps the tach edges, and the script reads them
+once per interval, so nothing runs between decisions. Both edges are counted:
+asked for falling edges only, the Pi's GPIO controller also reports some
+rising ones, and below full speed the rpm reads about 4% high.
 
 The fan's 4-pin Molex plug does not mate with the header. Use female-to-male
 jumpers, or cut into the supplied NA-EC1 extension rather than the fan lead.
@@ -133,8 +139,6 @@ some point, it collides with GPIO18 directly.
 ## Install
 
 ```sh
-sudo apt install -y python3-gpiozero python3-lgpio
-
 sudo install -m 755 noctua-fan.py /usr/local/bin/noctua-fan.py
 sudo install -m 644 noctua-fan.service /etc/systemd/system/noctua-fan.service
 
